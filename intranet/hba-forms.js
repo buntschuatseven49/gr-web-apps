@@ -6,13 +6,16 @@
     var getBackgroundColor = $(".AutoForm").css("background");
     var backgroundColorDisabled = getBackgroundColor.split(/[(]|[)]/);
     var backgroundColorDisabledRgba = "'rgba(" + backgroundColorDisabled[1] + ", 0.5)'";
+    var backgroundColorDisabledRgbaImp = "'rgba(" + backgroundColorDisabled[1] + ", 0.5)!important'";
 
     // Form fields Adresses
-    var $fromStreet = $("div.WohnadresseStrasseNr").find("input");
+    var $fromStreet = $("div.WohnadresseStrasse").find("input");
+    var $fromStreetNr = $("div.WohnadresseNr").find("input");
     var $fromPostcode = $("div.WohnadressePLZ").find("input"); 
     var $fromTown = $("div.WohnadresseOrt").find("input");
-    var $toStreet = $("div.ArbeitsadresseStrasseNr").find("input");
-    var $toPostcode = $("div.ArbeitsadressePLZ").find("input"); 
+    var $toStreet = $("div.ArbeitsadresseStrasse").find("input");
+    var $toStreetNr = $("div.ArbeitsadresseNr").find("input");
+    var $toPostcode = $("div.ArbeitsadressePLZ").find("input");
     var $toTown = $("div.ArbeitsadresseOrt").find("input");
 
     // Form fields times
@@ -45,66 +48,293 @@
     var $apiMessage = $("#search-api-message");
     $("<div id='date-invalid-message' style='color:red;font-size:0.875rem;margin-bottom:0.5rem'> </div>").insertAfter("div.Neuantragab");
     var $dateCheckMessage = $("#date-invalid-message");
+    $("<div id='town-invalid-resident' style='color:red;font-size:0.875rem;margin-bottom:0.5rem'> </div>").insertAfter("div.WohnadresseOrt");
+    var $adressValResidentTownMessage = $("#town-invalid-resident");
+    $("<div id='town-invalid-work' style='color:red;font-size:0.875rem;margin-bottom:0.5rem'> </div>").insertAfter("div.ArbeitsadresseOrt");
+    var $adressValWorkTownMessage = $("#town-invalid-work");
 
     // Message texts
     var messagesDE = {
     msgInvalidApplicationDate: "Wählen Sie bitte ein Antragsdatum, das nicht in der Vergangenheit liegt.",
+    msgAdressValTown: "PLZ und Ort stimmen nicht überein.",
     msgNoConnections: " Überprüfen Sie bitte Ihre Angaben.",
     msgSuccess: "Für Ihre Angaben wurden folgende Verbindungsdaten ermittelt.",
     msgApiError: "Ihre Anfrage kann momentan nicht ausgeführt werden, bitte versuchen Sie es zu einem späteren Zeitpunkt nochmal.",
     }
-    
 
     // Validate application date selection in future
-    var $dateCheck = $('div.Neuantragab').find('input');
-    $dateCheck.change(function(){
-    var dateString = $('div.Neuantragab').find('input').val();
+    $('.k-select').css({"background":textColor});
+    $('.k-calendar').find('.k-header').css({"background-color":backgroundColorDisabledRgbaImp});
+    var $dateCheckApplication = $('div.Neuantragab').find('input');
+    var $dateCheckMutation = $('div.Kündigung,Mutationper').find('input');
+
+    $dateCheckApplication.add($dateCheckMutation).on("change", function(){
+    var dateString = $(this).val();
     var dateParts = dateString.split(".");
     var dateObject = new Date(+dateParts[2], dateParts[1] - 1, +dateParts[0]);
     var dateToday = new Date();
     $($dateCheckMessage).text("")
-    if (dateObject < dateToday.setHours(0, 0, 0, 0)) {  
-        $($dateCheckMessage).text(messagesDE.msgInvalidApplicationDate);
-    }
+        if (dateObject < dateToday.setHours(0, 0, 0, 0)) {  
+            $($dateCheckMessage).text(messagesDE.msgInvalidApplicationDate);
+        }
     });
 
-	// Check for changes in adress fields and get connections
-    $fromStreet.add($fromPostcode).add($fromTown).add($toStreet).add($toPostcode).add($toTown).on("change", function(){ // $($fromStreet, $...) // .on("change", function
-        getConnections();
+    // Validate address for connection request
+    var addressValidation = false;
+
+
+
+    ////////////////////////// Address Autocomplete ////////////////////////////
+
+    // Generate container for address autocomplete and include street and streetnr.
+    $("<div id='address-container-resident' style='display:flex'></div>").insertAfter('#ctl00_SPWebPartManager1_g_5acecf18_a094_4fa7_b629_3eb48d4d5f41_AutoForm_Nachname');
+    $($fromStreet.parent()).detach().appendTo("#address-container-resident");
+    $($fromStreetNr.parent()).detach().appendTo("#address-container-resident").addClass('Required');
+    $($fromStreet.parent()).css({"width":"80%"});
+    $("<div id='address-container-work' style='display:flex'></div>").insertAfter('#ctl00_SPWebPartManager1_g_5acecf18_a094_4fa7_b629_3eb48d4d5f41_AutoForm_Fahrzeug_x002d_Kennzeichen_x00200');
+    $($toStreet.parent()).detach().appendTo("#address-container-work");
+    $($toStreetNr.parent()).detach().appendTo("#address-container-work").addClass('Required');
+    $($toStreet.parent()).css({"width":"80%"});
+
+    // Remove dropdown on click on site
+    $fromStreet.add($toStreet).focusout(function() {
+        setTimeout(function(){
+            $('#address-dropdown').remove();
+        }, 500);
+    })
+
+    // Differ resident and workaddress for field selection in addressAutoComplete
+    $fromStreet.add($toStreet).on('input', function(){
+        var section;
+        if ($(this).parent().prop('class').includes('Wohn')) {
+            section = "Wohn";
+        } else if ($(this).parent().prop('class').includes('Arbeits')) {
+            section = "Arbeits";
+        }
+        if ($(this).val().length > 4) {
+            addressAutoComplete(this, $(this).val(), section);
+        }
+    })
+
+    // API request for AutoComplete, generate list and fill values to address fields on click
+    function addressAutoComplete(_$element, _value, _section) {
+        var _valueUmlauts = _value.replace(/\u00dc/g, "Ue").replace(/\u00fc/g, "ue").replace(/\u00c4/g, "Ae").replace(/\u00e4/g, "ae").replace(/\u00d6/g, "Oe").replace(/\u00f6/g, "oe");
+        var dataAdressCheck = {    
+            "request": {
+                "ONRP": 0,
+                "ZipCode": "",
+                "ZipAddition": "",
+                "TownName": "",
+                "STRID": 0,
+                "StreetName": _valueUmlauts,
+                "HouseKey": 0,
+                "HouseNo": "",
+                "HouseNoAddition": ""
+            },
+            "zipOrderMode":0,
+            "zipFilterMode":0
+        };
+        $.ajax({
+            url: "https://02ds7tjzm7.execute-api.eu-west-1.amazonaws.com/Test?method=autocomplete4",
+            type: "POST",  
+            data: JSON.stringify(dataAdressCheck),
+            contentType: "application/json",
+            success: function (response) {
+                $('#address-dropdown').remove();
+                $(`<div id='address-dropdown' style='overflow:auto;max-height:16rem;position:absolute;z-index:5;width:100%;color:${textColor};background:white;box-shadow:1px 1px 3px 1px rgba(0,0,0,0.45);font-size:0.875rem;padding:0.5rem'></div>`).insertAfter($(_$element)) //parent?
+                var addressDropdown = $(_$element).parent().find('#address-dropdown');
+                let responseAdr = response.QueryAutoComplete4Result.AutoCompleteResult;
+                for (let i = 0; i < 40 && i < responseAdr.length; i++) {
+                    $(addressDropdown).append(`<div class='address-option' data-street='${responseAdr[i].StreetName}' data-zipcode='${responseAdr[i].ZipCode}' data-town='${responseAdr[i].TownName}' style='cursor:pointer'>` 
+                    + responseAdr[i].StreetName + ", " + responseAdr[i].ZipCode + " " + responseAdr[i].TownName + "</div>")
+                }
+                $(addressDropdown).find('div.address-option').on('click', function(){
+                    $('.' + _section + 'adresseStrasse').find('input').val();
+                    $('.' + _section + 'adressePLZ').find('input').val();
+                    $('.' + _section + 'adresseOrt').find('input').val();
+                    $('.' + _section + 'adresseStrasse').addClass('is-filled').find('input').val($(this).attr("data-street"))
+                    $('.' + _section + 'adressePLZ').addClass('is-filled').find('input').val($(this).attr("data-zipcode"))
+                    $('.' + _section + 'adresseOrt').addClass('is-filled').find('input').val($(this).attr("data-town"))
+                    $('.' + _section + 'adresseNr').find('input').focus();
+                })
+            },
+            error: function (xhr, status) {
+                console.log("error");
+            }
+            });
+        }
+
+
+    ////////////////////////////////// Address check ////////////////////////////////
+
+    // Check for changes in address fields and all addresscheck if not empty
+    $fromStreet.add($fromStreetNr).add($fromPostcode).add($fromTown).on("change", function(){
+        if ($fromStreet.val() && $fromPostcode.val() && $fromTown.val()) {
+            addressCheckResident();
+        }
     });
-	
-    function getConnections() {
+
+    $toStreet.add($toStreetNr).add($toPostcode).add($toTown).on("change", function(){
+        if ($toStreet.val() && $toPostcode.val() && $toTown.val()) {
+            addressCheckWork();
+            }
+    });
+
+    // Resident address
+    function addressCheckResident() {
+        // Set delay to make sure data from dropdown click is filled in
+        setTimeout( function(){
+        $.ajax({
+            url: "https://02ds7tjzm7.execute-api.eu-west-1.amazonaws.com/Test"   ,
+            type: "GET",    
+            data: {    
+                "streetname": $($fromStreet).val(),
+                "houseNo": $($fromStreetNr).val(),
+                "zipcode": $($fromPostcode).val(),
+                "method": "buildingverification2"
+            },
+            contentType: "application/json",
+            // Check result, display various error messages or set adressValidation to true (enables connection request)
+            success: function (response) {
+                $($adressValResidentTownMessage).text("");
+                var respondList = response.QueryBuildingVerification2Result.BuildingVerificationData;
+                
+                if (respondList.TownName !== $($fromTown).val()) {
+                    if (respondList.TownName === "") {
+                        $($adressValResidentTownMessage).text("Die Strasse " + $($fromStreet).val() + " " + $($fromStreetNr).val() + " konnte in " 
+                        + respondList.ZipCode + " " + $($fromTown).val() + " nicht gefunden werden. Bitte prüfen Sie Ihre Angaben.");
+                    } else {
+                    $($adressValResidentTownMessage).text(messagesDE.msgAdressValTown);
+                    }
+                    addressValidation = false;
+                } else if ($(respondList.HouseKey).length === 0 && $($fromStreetNr).val() === "") {
+                    $($adressValResidentTownMessage).text("Fehlende Hausnummer - für " + $($fromStreet).val() + " in "
+                    + respondList.ZipCode + " " + $($fromTown).val() + " ist die Angabe einer Hausnummer erforderlich.");
+                    addressValidation = false;
+                } else if ($(respondList.HouseKey).length === 0) {
+                    $($adressValResidentTownMessage).text("Die Hausnummer " + $($fromStreetNr).val() + " an " + $($fromStreet).val() + " konnte in "
+                    + respondList.ZipCode + " " + $($fromTown).val() + " nicht gefunden werden. Bitte prüfen Sie Ihre Angaben.");
+                    addressValidation = false;
+                } else {
+                    addressValidation = true;
+                }                
+            },
+            error: function (xhr, status) {
+                console.log("error");
+                addressValidation = false;
+            }
+          });
+        }, 500)
+    }
+
+    // Work address
+    function addressCheckWork() {
+        // Set delay to make sure data from dropdown click is filled in
+          setTimeout( function(){
+          $.ajax({
+              url: "https://02ds7tjzm7.execute-api.eu-west-1.amazonaws.com/Test"   ,
+              type: "GET",    
+              data: {    
+                  "streetname": $($toStreet).val(),
+                  "houseNo": $($toStreetNr).val(),
+                  "zipcode": $($toPostcode).val(),
+                  "method": "buildingverification2"
+              },
+              contentType: "application/json",
+              // Check result, display various error messages or set adressValidation to true (enables connection request)
+              success: function (response) {
+                  $($adressValWorkTownMessage).text("");
+                  var respondList = response.QueryBuildingVerification2Result.BuildingVerificationData;
+                  if (respondList.TownName !== $($toTown).val()) {
+                    if (respondList.TownName === "") {
+                        $($adressValWorkTownMessage).text("Die Strasse " + $($toStreet).val() + " " + $($toStreetNr).val() + " konnte in " 
+                    + respondList.ZipCode + " " + $($toTown).val() + " nicht gefunden werden. Bitte prüfen Sie Ihre Angaben");
+                    } else {
+                      $($adressValWorkTownMessage).text(messagesDE.msgAdressValTown);
+                    }
+                    addressValidation = false;
+                  } else if ($(respondList.HouseKey).length === 0 && $($toStreetNr).val() === "") {
+                    $($adressValWorkTownMessage).text("Fehlende Hausnummer - für " + $($toStreet).val() + " in "
+                    + respondList.ZipCode + " " + $($toTown).val() + " ist die Angabe einer Hausnummer erforderlich.");
+                    addressValidation = false;
+                } else if ($(respondList.HouseKey).length === 0) {
+                    $($adressValWorkTownMessage).text("Die Hausnummer " + $($toStreetNr).val() + " an " + $($toStreet).val() + " konnte in " 
+                    + respondList.ZipCode + " " + $($toTown).val() + " nicht gefunden werden. Bitte prüfen Sie Ihre Angaben");
+                    addressValidation = false;
+                } else {
+                    addressValidation = true;
+                }
+              },
+              error: function (xhr, status) {
+                  console.log("error");
+                  addressValidation = false;
+              }
+            });
+        }, 500)
+    }
+
+    // Check for changes in adress fields and get connections
+    $fromStreet.add($fromStreetNr).add($fromPostcode).add($fromTown).add($toStreet).add($toStreetNr).add($toPostcode).add($toTown).on("change", function(){
+        // Clear results in form fields from previous request
+        $connectionShortest.val("");
+        $connectionAverage.val("");
+        $stationDeparture.val("");
+        $stationArrival.val("");
+        $walkDuration.val("");
+        $apiMessage.text("");
+        $("#label-shortest-connection").text("");
         // Check if no adress field is empty
         if ($fromStreet.val() && $fromPostcode.val() && $fromTown.val() && $toStreet.val() && $toPostcode.val() && $toTown.val()) {
+            // Check for valid address and call getConnections with delay to make sure data is updated
+            setTimeout( function(){
+                if (addressValidation == true) {
+                getConnections();
+                }
+            }, 1000);
+        }
+    });
 
-        // Set date to weekday        
+
+    //////////////////////////////////// Get connections ///////////////////////////////////////////
+    function getConnections() {
+        // Set date to wednesday        
         function setWeekday() {
             var date = new Date();
             var _todayDay = date.getDay();
             if (_todayDay == 0) {
+                date.setDate(date.getDate() + 3);
+            }
+            if (_todayDay == 1) {
                 date.setDate(date.getDate() + 2);
             }
-            else if (_todayDay == 7) {
+            if (_todayDay == 2) {
+                date.setDate(date.getDate() + 1);
+            }
+            if (_todayDay == 4) {
+                date.setDate(date.getDate() + 6);
+            }
+            if (_todayDay == 5) {
                 date.setDate(date.getDate() + 5);
+            }
+            else if (_todayDay == 6) {
+                date.setDate(date.getDate() + 4);
             }
             return date.toLocaleDateString();
         }
-        var dateApiRequest = setWeekday();  //----------------------------
+        var dateApiRequest = setWeekday(); 
 
         // Call api request for street an postcode. City can lead to false connections if postcode does not fit.
         // Postcode then can be taken as streetnumber. Street is always the strongest argument. 
         // If street doesn't fit to city, the api takes any city, the street exists.
         $.ajax({
-        url: apiUrl + 'from=' + $fromStreet.val() + ',' + $fromPostcode.val() + '&to=' + 
-        $toStreet.val() + ',' + $toPostcode.val() +'&time=06:30' + '&date=' + dateApiRequest,
+        url: apiUrl + 'from=' + $fromStreet.val() + ' ' + $fromStreetNr.val() + ',' + $fromPostcode.val() + '&to=' + 
+        $toStreet.val() + ' ' + $toStreetNr.val() + ',' + $toPostcode.val() +'&time=06:30' + '&date=' + dateApiRequest,
         type: "GET",
 
         success: function (result) {
-
             // Check result for error
             var connections = result.connections;
             if (typeof connections == "undefined") {
-                console.log(result);
                 // Set error message
                 var errorMessage;
                 var apiErrorMessage = result.messages;
@@ -126,11 +356,9 @@
             } else {
                 // Set departure station to fastest direction
                 $(`<span id='label-shortest-connection' style='color: ${textColor} ;position:absolute;top:25%;right:20%;font-size:0.875rem'></span>`)
-                //$("<span id='label-shortest-connection' style='color:" + textColor + ";position:absolute;top:25%;right:20%;font-size:0.875rem'></span>")
                 .insertBefore($connectionShortest);
                 
                 // Set success message
-                console.log(result);
                 $apiMessage.text(messagesDE.msgSuccess).css({"color":textColor});
             
                 // Set variables for data
@@ -185,10 +413,9 @@
             $apiMessage.text(messagesDE.msgApiError);
             console.log(error);
         }
-        
         });
     }
     }
-});
+);
 
 
